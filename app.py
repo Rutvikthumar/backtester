@@ -18,9 +18,17 @@ end_date = st.sidebar.date_input("End Date", pd.to_datetime("2024-04-05"))
 initial_capital = st.sidebar.number_input("Starting Cash ($)", 10000, 1000000, 100000)
 
 st.sidebar.subheader("Entry Logic")
-di_threshold = st.sidebar.slider("DI Spread Threshold (>)", 10, 50, 20)
-vix_min = st.sidebar.slider("Min Absolute VIX (>)", 10, 50, 20)
+di_threshold = st.sidebar.slider("Entry: DI Spread (Bears) >", 10, 50, 20)
+vix_min = st.sidebar.slider("Min Absolute VIX >", 10, 50, 20)
 vix_relative = st.sidebar.slider("VIX % of 20-Day High", 0.5, 1.0, 0.85)
+
+st.sidebar.subheader("Exit Logic")
+# NEW: Dropdown for Profit Taking
+exit_strategy = st.sidebar.selectbox(
+    "Take Profit Strategy",
+    ("Middle Band (SMA)", "Upper Band (2-Sigma)", "Bullish DI Reversal (DI+ - DI- > 20)")
+)
+st.sidebar.caption(f"Currently selected: {exit_strategy}")
 
 st.sidebar.subheader("Risk Management")
 risk_per_trade = st.sidebar.slider("Risk per Trade (%)", 1, 10, 2)
@@ -30,7 +38,6 @@ if st.sidebar.button("Run Backtest 🚀"):
     
     # --- 1. DATA LOADING ---
     with st.spinner(f"Downloading data for {symbol}..."):
-        # Added auto_adjust=True to fix recent yfinance update warnings
         spy = yf.download(symbol, start=start_date, end=end_date, progress=False, auto_adjust=True)
         vix = yf.download(vix_symbol, start=start_date, end=end_date, progress=False, auto_adjust=True)
 
@@ -47,6 +54,7 @@ if st.sidebar.button("Run Backtest 🚀"):
     window = 20
     df['SMA'] = df['Close'].rolling(window).mean()
     df['STD'] = df['Close'].rolling(window).std()
+    df['Upper_BB2'] = df['SMA'] + (2 * df['STD']) # Needed for Aggressive Exit
     df['Lower_BB2'] = df['SMA'] - (2 * df['STD'])
 
     # ADX / DMI
@@ -91,7 +99,7 @@ if st.sidebar.button("Run Backtest 🚀"):
         current_equity = cash + (shares * price)
         equity_curve.append({'Date': date, 'Equity': current_equity})
 
-        # 6% Rule Check
+        # 6% Rule Check (Shark Bite)
         if date.month != current_month:
             current_month = date.month
             monthly_start_equity = current_equity
@@ -120,8 +128,6 @@ if st.sidebar.button("Run Backtest 🚀"):
                 
                 risk_per_share = price - stop_level
                 risk_dollars = current_equity * (risk_per_trade/100)
-                
-                # Check for zero division
                 if risk_per_share <= 0: risk_per_share = 0.01 
                 
                 size = int(risk_dollars / risk_per_share)
@@ -132,37 +138,59 @@ if st.sidebar.button("Run Backtest 🚀"):
                     cash -= shares * price
                     trade_log.append({'Date': date.date(), 'Type': 'BUY', 'Price': price, 'Shares': shares, 'PnL': 0})
 
-        # Exit Logic
+        # Exit Logic (Updated with Dropdown)
         elif shares > 0:
-            # Re-calc stop level 
+            # 1. Stop Loss (Always Active)
             stop_line = row['Support_10']
-            
             if row['Low'] < stop_line:
                 cash += shares * stop_line
                 trade_log.append({'Date': date.date(), 'Type': 'STOP LOSS', 'Price': stop_line, 'Shares': shares, 'PnL': -1})
                 shares = 0
             
-            elif price > df['SMA'][i]:
-                cash += shares * price
-                trade_log.append({'Date': date.date(), 'Type': 'TARGET HIT', 'Price': price, 'Shares': shares, 'PnL': 1})
-                shares = 0
+            else:
+                # 2. Check Profit Target based on User Selection
+                should_sell = False
+                exit_reason = ""
+
+                # Option A: Middle Band (Conservative)
+                if exit_strategy == "Middle Band (SMA)":
+                    if price > df['SMA'][i]:
+                        should_sell = True
+                        exit_reason = "TARGET (SMA)"
+
+                # Option B: Upper Band (Aggressive)
+                elif exit_strategy == "Upper Band (2-Sigma)":
+                    if price > row['Upper_BB2']:
+                        should_sell = True
+                        exit_reason = "TARGET (UPPER BB)"
+
+                # Option C: Bullish DI Reversal (Momentum)
+                elif exit_strategy == "Bullish DI Reversal (DI+ - DI- > 20)":
+                    # Check if DI+ is higher than DI- by at least 20 points
+                    bull_spread = row['PlusDI'] - row['MinusDI']
+                    if (row['PlusDI'] > row['MinusDI']) and (bull_spread > 20):
+                        should_sell = True
+                        exit_reason = "TARGET (DI REVERSAL)"
+
+                # Execute Sell if condition met
+                if should_sell:
+                    cash += shares * price
+                    trade_log.append({'Date': date.date(), 'Type': exit_reason, 'Price': price, 'Shares': shares, 'PnL': 1})
+                    shares = 0
 
     # --- 4. DISPLAY RESULTS ---
     equity_df = pd.DataFrame(equity_curve).set_index('Date')
     final_val = equity_df['Equity'].iloc[-1]
     return_pct = ((final_val - initial_capital) / initial_capital) * 100
     
-    # Top Metrics
     col1, col2, col3 = st.columns(3)
     col1.metric("Final Portfolio Value", f"${final_val:,.2f}")
     col2.metric("Total Return", f"{return_pct:.2f}%")
     col3.metric("Total Trades", len([t for t in trade_log if t['Type'] == 'BUY']))
 
-    # Charts
     st.subheader("Equity Curve")
     st.line_chart(equity_df)
 
-    # Trade Log
     st.subheader("Trade Log")
     if trade_log:
         trades_df = pd.DataFrame(trade_log)
@@ -171,4 +199,4 @@ if st.sidebar.button("Run Backtest 🚀"):
         st.warning("No trades found with these settings.")
 
 else:
-    st.info("👈 Adjust settings in the sidebar and click 'Run Backtest'")
+    st.info("👈 Select your Exit Strategy in the sidebar and click 'Run Backtest'")
