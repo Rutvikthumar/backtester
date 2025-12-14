@@ -91,7 +91,7 @@ if st.sidebar.button("Run Backtest 🚀"):
         price = row['Close']
         
         current_equity = cash + (shares * price)
-        equity_curve.append({'Date': date, 'Equity': current_equity})
+        equity_curve.append({'Date': date, 'Strategy Equity': current_equity})
 
         # Shark Bite (6% Rule)
         if date.month != current_month:
@@ -154,73 +154,70 @@ if st.sidebar.button("Run Backtest 🚀"):
                     trade_log.append({'Date': date.date(), 'Type': exit_reason, 'Price': price, 'Shares': shares, 'PnL': 1})
                     shares = 0
 
-    # --- 4. CALCULATE QUANTCONNECT STYLE METRICS ---
+    # --- 4. CALCULATE METRICS (STRATEGY vs BENCHMARK) ---
     equity_df = pd.DataFrame(equity_curve).set_index('Date')
     
-    # 1. Total Return
-    final_val = equity_df['Equity'].iloc[-1]
-    total_return = (final_val - initial_capital) / initial_capital
+    # Benchmark Calculation (Buy & Hold)
+    # We reconstruct what happened if we just bought QQQ on day 1
+    start_price = df['Close'].iloc[50]
+    equity_df['Benchmark Equity'] = initial_capital * (df['Close'].iloc[50:] / start_price)
     
-    # 2. CAGR (Compound Annual Growth Rate)
+    # 1. CAGR Calculation
     days = (equity_df.index[-1] - equity_df.index[0]).days
     years = days / 365.25
+    
+    final_strat = equity_df['Strategy Equity'].iloc[-1]
+    final_bench = equity_df['Benchmark Equity'].iloc[-1]
+    
     if years > 0:
-        cagr = (final_val / initial_capital) ** (1 / years) - 1
+        cagr_strat = (final_strat / initial_capital) ** (1 / years) - 1
+        cagr_bench = (final_bench / initial_capital) ** (1 / years) - 1
     else:
-        cagr = 0
+        cagr_strat = 0
+        cagr_bench = 0
 
-    # 3. Max Drawdown
-    equity_df['Peak'] = equity_df['Equity'].cummax()
-    equity_df['Drawdown'] = (equity_df['Equity'] - equity_df['Peak']) / equity_df['Peak']
+    # 2. Max Drawdown
+    equity_df['Peak'] = equity_df['Strategy Equity'].cummax()
+    equity_df['Drawdown'] = (equity_df['Strategy Equity'] - equity_df['Peak']) / equity_df['Peak']
     max_drawdown = equity_df['Drawdown'].min()
 
-    # 4. Sharpe Ratio (Risk Adjusted Return)
-    equity_df['Daily_Return'] = equity_df['Equity'].pct_change()
+    # 3. Sharpe Ratio
+    equity_df['Daily_Return'] = equity_df['Strategy Equity'].pct_change()
     mean_daily_return = equity_df['Daily_Return'].mean()
     std_daily_return = equity_df['Daily_Return'].std()
-    
-    if std_daily_return != 0:
-        sharpe_ratio = (mean_daily_return / std_daily_return) * np.sqrt(252)
-    else:
-        sharpe_ratio = 0
+    sharpe_ratio = (mean_daily_return / std_daily_return) * np.sqrt(252) if std_daily_return != 0 else 0
 
-    # 5. Win Rate
+    # 4. Win Rate
+    win_rate = 0
     if trade_log:
         trades_df = pd.DataFrame(trade_log)
-        # Filter for closed trades (sells)
         closed_trades = trades_df[trades_df['Type'].isin(['STOP LOSS', 'TARGET (SMA)', 'TARGET (UPPER BB)', 'TARGET (DI REVERSAL)', 'SHARK BITE'])]
         if not closed_trades.empty:
-            wins = len(closed_trades[closed_trades['PnL'] > 0])
-            total_closed = len(closed_trades)
-            win_rate = wins / total_closed
-        else:
-            win_rate = 0
-    else:
-        win_rate = 0
+            win_rate = len(closed_trades[closed_trades['PnL'] > 0]) / len(closed_trades)
 
     # --- 5. DISPLAY DASHBOARD ---
     
     st.subheader("Performance Overview")
     
-    # Row 1: The Big Numbers
+    # Row 1: Strategy vs Benchmark
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Net Profit", f"${final_val - initial_capital:,.2f}", f"{total_return*100:.2f}%")
-    col2.metric("CAGR", f"{cagr*100:.2f}%")
+    col1.metric("Strategy CAGR", f"{cagr_strat*100:.2f}%")
+    col2.metric("Benchmark CAGR", f"{cagr_bench*100:.2f}%", delta=f"{(cagr_strat-cagr_bench)*100:.2f}%")
     col3.metric("Sharpe Ratio", f"{sharpe_ratio:.2f}")
     col4.metric("Max Drawdown", f"{max_drawdown*100:.2f}%")
 
     # Row 2: Trade Stats
     col5, col6, col7, col8 = st.columns(4)
     col5.metric("Win Rate", f"{win_rate*100:.1f}%")
-    col6.metric("Total Trades", len([t for t in trade_log if t['Type'] == 'BUY']))
-    col7.metric("Final Equity", f"${final_val:,.0f}")
+    col6.metric("Final Equity", f"${final_strat:,.0f}")
+    col7.metric("Total Trades", len([t for t in trade_log if t['Type'] == 'BUY']))
     col8.metric("Years Tested", f"{years:.1f}")
 
     # Charts
-    st.subheader("Equity Curve vs Drawdown")
-    st.line_chart(equity_df[['Equity']])
+    st.subheader("Strategy vs Benchmark")
+    st.line_chart(equity_df[['Strategy Equity', 'Benchmark Equity']])
     
-    # Drawdown Chart (Area)
+    st.subheader("Drawdown")
     st.area_chart(equity_df['Drawdown'])
 
     # Trade Log
