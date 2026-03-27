@@ -168,36 +168,34 @@ if st.sidebar.button("Run Backtest 🚀"):
                 trade_log.append({'Date': date.date(), 'Type': 'SELL', 'Price': price, 'VIX': vix_val, 'Reason': reason})
                 shares = 0
 
-    # --- 4. PERFORMANCE ANALYSIS ---
+    # 4. STATS ENGINE
     eq_df = pd.DataFrame(equity_curve).set_index('Date')
+    eq_df['Benchmark'] = initial_capital * (df['Close'] / df['Close'].iloc[20])
     
-    # Benchmark (Buy & Hold)
-    bench_start_price = df['Close'].iloc[50]
-    eq_df['Benchmark'] = initial_capital * (df['Close'] / bench_start_price)
-    
-    # Metrics
-    final_val = eq_df['Strategy Equity'].iloc[-1]
-    total_ret = (final_val - initial_capital) / initial_capital
-    
-    # Drawdown
-    eq_df['Peak'] = eq_df['Strategy Equity'].cummax()
-    eq_df['DD'] = (eq_df['Strategy Equity'] - eq_df['Peak']) / eq_df['Peak']
-    max_dd = eq_df['DD'].min()
+    # CAGR Calculation
+    years = (eq_df.index[-1] - eq_df.index[0]).days / 365.25
+    cagr_strat = (eq_df['Strategy'].iloc[-1] / initial_capital)**(1/years) - 1
+    cagr_bench = (eq_df['Benchmark'].iloc[-1] / initial_capital)**(1/years) - 1
 
-    # --- 5. DISPLAY ---
-    st.subheader("Performance vs Benchmark")
-    st.line_chart(eq_df[['Strategy Equity', 'Benchmark']])
-    
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Final Return", f"{total_ret*100:.1f}%")
-    c2.metric("Max Drawdown", f"{max_dd*100:.1f}%")
-    c3.metric("Total Cash", f"${final_val:,.0f}")
+    # Sharpe (Risk-Free = 0 for simplicity)
+    strat_rets = eq_df['Strategy'].pct_change().dropna()
+    bench_rets = eq_df['Benchmark'].pct_change().dropna()
+    sharpe_strat = (strat_rets.mean() / strat_rets.std()) * np.sqrt(252)
+    sharpe_bench = (bench_rets.mean() / bench_rets.std()) * np.sqrt(252)
 
-    st.subheader("Trade History")
-    if trade_log:
-        st.dataframe(pd.DataFrame(trade_log))
-    else:
-        st.info("No trades triggered. Try lowering VIX Entry requirements.")
+    # Max Drawdown
+    dd_strat = (eq_df['Strategy'] / eq_df['Strategy'].cummax() - 1).min()
+
+    # 5. DASHBOARD
+    st.subheader("Performance Metrics")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Strategy CAGR", f"{cagr_strat*100:.2f}%", delta=f"{(cagr_strat-cagr_bench)*100:.2f}% vs Bench")
+    m2.metric("Benchmark CAGR", f"{cagr_bench*100:.2f}%")
+    m3.metric("Strategy Sharpe", f"{sharpe_strat:.2f}")
+    m4.metric("Max Drawdown", f"{dd_strat*100:.1f}%")
+
+    st.line_chart(eq_df[['Strategy', 'Benchmark']])
+    st.write("### Trade Log", pd.DataFrame(trade_log))
 
     st.subheader("Why the VIX Exit matters:")
     st.write("""
